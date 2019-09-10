@@ -27,12 +27,12 @@ class CellularShield {
 public:
 
     static constexpr auto LTE_SHIELD_POWER_PIN = 5;
-    static constexpr auto LTE_SHIELD_RESET_PIN = 6;
     static constexpr auto LTE_SHIELD_BAUD = 115200;
     static constexpr auto LTE_SHIELD_COMMAND_MAX_LEN = 10;
     static constexpr auto LTE_SHIELD_POWER_PULSE_PERIOD = 3200;
     static constexpr auto LTE_SHIELD_RESET_PULSE_PERIOD = 10000;
     static constexpr auto LTE_SHIELD_POWER_TIMEOUT = 12000;
+    static constexpr auto LTE_SHIELD_RESET_TIMEOUT = 10000;
     static constexpr auto LTE_SHIELD_GREETING = '@';
 
     enum class Protocol {
@@ -40,14 +40,22 @@ public:
         UDP = 17
     };
 
+    enum class ResponseType : char {
+        DATA = '+',
+        OK = 'O',
+        ERROR = 'E',
+        TIMEOUT = 254,
+        UNKNOWN = 255,
+    };
+
     enum class Error {
         OK,
         TIMEOUT,
         INVALID_RESPONSE,
-        UNEXPECTED_CHAR,
+        UNEXPECTED_DATA,
         UNEXPECTED_OK,
         LTE_ERROR,
-        LTE_NOT_FOUND,
+        LTE_NOT_FOUND
     };
 
     enum class DebugLevel {
@@ -62,10 +70,10 @@ public:
     };
 
     CellularShield(HardwareSerial & serial,
-        const uint8_t powerPin = LTE_SHIELD_POWER_PIN, 
-        const uint8_t resetPin = LTE_SHIELD_RESET_PIN,
+        const uint8_t powerDetectPin,
+        const uint8_t powerPin = LTE_SHIELD_POWER_PIN,
         // MUST BE OVER 10 seconds
-        const unsigned int timeout = 15000,
+        const unsigned int timeout = 5000,
         const DebugLevel level = DebugLevel::NONE);
 
     bool begin();
@@ -83,12 +91,22 @@ private:
 
     void m_power_toggle() const;
 
-    Error m_reset_and_configure() const;
+    Error m_configure() const;
 
-    Error m_send_command(const char* command,
+    Error m_reset() const;
+
+    Error m_send_command(const char* const command,
         const bool at = true,
-        char* dest = nullptr, 
-        const size_t dest_max = 0) const;
+        char* response = nullptr, 
+        const size_t dest_max = 0,
+        const unsigned long timeout = 0,
+        const uint8_t tries = 3) const;
+
+    ResponseType m_check_response(const unsigned long start, const unsigned long timeout) const;
+
+    ResponseType m_check_response(const unsigned long start) const { return m_check_response(start, m_timeout); }
+
+    Error m_response_to_error(const ResponseType resp) const;
 
     char m_read_serial(const unsigned long start, const unsigned long timeout) const {
         while (!m_serial.available()) {
@@ -105,7 +123,7 @@ private:
         return c;
     }
 
-    char m_read_serial(const unsigned long start) { m_read_serial(start, m_timeout); }
+    char m_read_serial(const unsigned long start) const { return m_read_serial(start, m_timeout); }
 
     /** @brief Prints a debugging prefix to all logs, so we can attatch them to useful information */
     void m_print_prefix() const { Serial.print("[CellularShield]"); }
@@ -131,8 +149,8 @@ private:
     void m_error(const T& str) const { m_print(str, DebugLevel::ERROR); }
 
     HardwareSerial& m_serial;
+    const uint8_t m_power_detect_pin;
     const uint8_t m_power_pin;
-    const uint8_t m_reset_pin;
     const unsigned int m_timeout;
     const DebugLevel m_debug;
 };
