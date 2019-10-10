@@ -1,2 +1,4 @@
 # CellularShieldDriver
 A re-written library for the Sparkfun LTE Cat M1/NB-IoT Shield
+
+Note: A M2M SIM card from a major carrier will now work with the Sparkfun Shield! All major carriers (AT&T, Verizon, T-Mobile) require the device to be certified through them (ex. [verizon](https://opendevelopment.verizonwireless.com/content/dam/opendevelopment/pdf/OpenAccessReq/ODDeviceCertificationProcess.pdf)) in order to access their networks, and the Sparkfun breakout does not have these certifications. In order to use this breakout you will need to purchase a SIM plan from a meta-carrier that does not require certification, such as [hologram](https://hologram.io/products/iot-sim-card/) or [podsystem](https://podm2m.com/). Alternatively you can buy a different cellular modem that is pre-certified for major networks, such as the [PyCom GPy](https://pycom.io/product/gpy/).

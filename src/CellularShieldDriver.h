@@ -31,6 +31,7 @@ public:
     static constexpr auto LTE_SHIELD_COMMAND_MAX_LEN = 10;
     static constexpr auto LTE_SHIELD_POWER_PULSE_PERIOD = 3200;
     static constexpr auto LTE_SHIELD_RESET_PULSE_PERIOD = 10000;
+    static constexpr auto LTE_SHIELD_ECHO_TIMEOUT = 500;
     static constexpr auto LTE_SHIELD_POWER_TIMEOUT = 12000;
     static constexpr auto LTE_SHIELD_RESET_TIMEOUT = 10000;
     static constexpr auto LTE_SHIELD_GREETING = '@';
@@ -55,7 +56,44 @@ public:
         UNEXPECTED_DATA,
         UNEXPECTED_OK,
         LTE_ERROR,
-        LTE_NOT_FOUND
+        LTE_NOT_FOUND,
+        LTE_BAD_CONFIG,
+        LTE_AUTO_MNO_FAILED,
+    };
+
+    
+    enum class PDPType {
+        IPV4 = 0,
+        NONIP = 1,
+        IPV4V6 = 2,
+        IPV6 = 3,
+        NONE
+    };
+
+    enum class MNOType {
+        ERROR = 0,
+        AUTO = 1, /** Does not work with roaming! */
+        ATT = 2,
+        VERIZON = 3,
+        TELESTRA = 4,
+        TMOBILE = 5,
+        CHINETELECOM = 6,
+        SPRINT = 8,
+        VODAPHONE = 19,
+        TELUS = 21,
+        DEUTSCHETELECOM = 31,
+        STANDARDEUROPE = 100
+    };
+
+    enum class RegistrationStatus : char {
+        DISABLED = '0',
+        HOME_NETWORK = '1',
+        SEARCHING = '2',
+        DENIED = '3',
+        NO_SIGNAL = '4',
+        ROAMING = '5',
+        HOME_SMS_ONLY = '6',
+        ROAMING_SMS_ONLY = '7'
     };
 
     enum class DebugLevel {
@@ -69,14 +107,32 @@ public:
         INFO = 3,
     };
 
+    struct NetworkConfig {
+        NetworkConfig(const char* apn,
+            const MNOType mno,
+            const PDPType pdp)
+            : apn(apn)
+            , mno(mno)
+            , pdp(pdp) {}
+
+        static constexpr NetworkConfig VERIZON{ "vzwinternet", MNOType::VERIZON, PDPType::IPV4 };
+        static constexpr NetworkConfig HOLOGRAM{ "hologram", MNOType::VERIZON, PDPType::IPV4 };
+        
+        String apn;
+        MNOType mno;
+        PDPType pdp;
+    };
+
     CellularShield(HardwareSerial & serial,
         const uint8_t powerDetectPin,
         const uint8_t powerPin = LTE_SHIELD_POWER_PIN,
-        // MUST BE OVER 10 seconds
+        const NetworkConfig& netconfig = NetworkConfig::HOLOGRAM,
         const unsigned int timeout = 5000,
         const DebugLevel level = DebugLevel::NONE);
 
     bool begin();
+
+    bool set_network_config(const NetworkConfig& config);
     /*
     int8_t socketOpen(Protocol protocol, unsigned int localPort = 0);
     LTE_Shield_error_t socketClose(int socket);
@@ -92,6 +148,9 @@ private:
     void m_power_toggle() const;
 
     Error m_configure() const;
+    Error m_configure_network() const;
+
+    Error m_verify_network() const;
 
     Error m_reset() const;
 
@@ -148,7 +207,10 @@ private:
     template<typename T>
     void m_error(const T& str) const { m_print(str, DebugLevel::ERROR); }
 
+    static const char* m_get_pdp_str(const PDPType pdp);
+
     HardwareSerial& m_serial;
+    NetworkConfig m_net_config;
     const uint8_t m_power_detect_pin;
     const uint8_t m_power_pin;
     const unsigned int m_timeout;

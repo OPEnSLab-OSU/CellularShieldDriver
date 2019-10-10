@@ -23,9 +23,11 @@
 CellularShield::CellularShield(HardwareSerial & serial,
     const uint8_t powerDetectPin,
     const uint8_t powerPin,
+    const NetworkConfig& netconfig,
     const unsigned int timeout,
     const CellularShield::DebugLevel level)
     : m_serial(serial)
+    , m_net_config(netconfig)
     , m_power_detect_pin(powerDetectPin)
     , m_power_pin(powerPin)
     , m_timeout(timeout)
@@ -41,11 +43,9 @@ bool CellularShield::begin() {
     // check if the shield is alive
     Error err = m_send_command("E0");
     if (err == Error::OK) {
-        m_info("Shield is online!");
-        // test response
-        char response[128];
-        err = m_send_command("+COPS=?", true, response, sizeof(response));
-        if (err == Error::OK) m_info(response);
+        m_info("Shield is online! Reseting to close all sockets...");
+        err = m_reset();
+        if (err != Error::OK) return false;
     }
     // if it isn't we may need to power it on
     else if (err == Error::TIMEOUT) {
@@ -67,8 +67,19 @@ bool CellularShield::begin() {
         if (m_send_command("E0") == Error::OK) m_info("Shield successfully powered on!");
     }
     else return false;
-    // TODO: check cellular connection
-    return true;
+    // Test that the network is configured correctly
+    err = m_verify_network();
+    // configure the network
+    if (err == Error::LTE_BAD_CONFIG) {
+        err = m_configure_network();
+        if (err != Error::OK) return false;
+        // verify the network one last time
+        err = m_verify_network();
+        if (err != Error::OK) return false;
+    }
+    m_info("LTE Shield is connected and ready!");
+    // else the network failed to configure or we're in an unknown state 
+    return false;
 }
 
 void CellularShield::m_power_toggle() const {
@@ -112,11 +123,6 @@ CellularShield::Error CellularShield::m_configure() const {
         "+CMGF=1",
         // set auto timezone to true
         "+CTZU=1",
-        // tell the device to disconnect from the network
-        // so we can configure cellular
-        "+CFUN=0",
-        // set the device to configure MNO based on the SIM card!
-        "+UMNOPROF=1"
     };
     // run all the above commands in consecutive order
     for (uint8_t i = 0; i < sizeof(commands) / sizeof(char*); i++) {
@@ -126,8 +132,96 @@ CellularShield::Error CellularShield::m_configure() const {
     }
     // and reset the device
     err = m_reset();
-    // we should now have connection?
+    if (err != Error::OK) return err;
+}
+
+CellularShield::Error CellularShield::m_configure_network() const {
+    // this function assumes the device is on configured using m_configure
+    // first we need to set the MNO profile of the device, so that we know
+    // which networks to scan for
+    // disable the network so we can start
+    Error err = m_send_command("+CFUN=0");
+    if (err != Error::OK) return err;
+    delay(100);
+    // set the MNO profile according to what was provided
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "+UMNOPROF=%d", static_cast<int>(m_net_config.mno));
+        err = m_send_command(buf);
+        if (err != Error::OK) return err;
+        delay(100);
+    }
+    // and reset the device
+    err = m_reset();
+    if (err != Error::OK) return err;
+    // if the MNO was auto-selected, make sure that a profile was chosen
+    if (m_net_config.mno == MNOType::AUTO) {
+        char res[3] = {};
+        err = m_send_command("+UMNOPROF?", true, res, 2);
+        if (err != Error::OK) return err;
+        const int num = atoi(res);
+        if (num <= 0) {
+            m_error("SIM MNO select failed! This is probably because your SIM is not from a major carrier. Please select an MNO profile other than AUTO.")
+            return Error::LTE_AUTO_MNO_FAILED;
+        }
+        else {
+            m_info("SIM autoselect found profile: ");
+            m_info(num);
+        }
+        delay(100);
+    }
+    // next, set the default PDP context with the values provided, if any
+    if (m_net_config.pdp != PDPType::NONE && apn.length() > 0) {
+        // build the AT command
+        char buf[84];
+        snprintf(buf, sizeof(buf), "+CGDCONT=0,\"%s\",\"%s\"", 
+            m_get_pdp_str(m_net_config.pdp), 
+            m_net_config.apn.c_str());
+        // configure the PDP contexts
+        err = m_send_command(buf);
+        if (err != Error::OK) return err;
+        delay(100);
+    }
+    // and reset the device
+    err = m_reset();
+    if (err != Error::OK) return err;
+    // finally, set the device to auto-register
+    err = m_send_command("+COPS=0");
+    delay(100);
     return err;
+}
+
+CellularShield::Error CellularShield::m_verify_network() const {
+    // check that the MNO profile is set correctly, as if it isn't
+    // we might end up on the wrong networks
+    {
+        char res[3] = {};
+        err = m_send_command("+UMNOPROF?", true, res, 2);
+        if (err != Error::OK) return err;
+        const int num = atoi(res);
+        if (num == static_cast<int>(MNOType::ERROR) 
+            || num != static_cast<int>(m_net_config.mno)) {
+                m_warn("Found an incorrect MNO on the moduem: ");
+                m_warn(num);
+                return Error::LTE_BAD_CONFIG;
+            }
+    }
+    // check that the network is enables and registered successfully
+    {
+        // operator select check
+        char res[24];
+        err = m_send_command("+COPS?", true, res, 23);
+        if (err != Error::OK) return err;
+        if (res[0] == '2') {
+            m_warn("Modem network was disabled.");
+            return LTE_BAD_CONFIG;
+        }
+        // network registration check
+        err = m_send_command("+CREG?", true, res, 6);
+        if (err != Error::OK) return err;
+        // check the regisration code against the possible ones
+        const RegistrationStatus& status = static_cast<RegistrationStatus>(res[2]);
+    }
 }
 
 // unhandled edge cases: "\r\n" in response, response without + prefix, command without + prefix
@@ -169,7 +263,7 @@ CellularShield::Error CellularShield::m_send_command(const char* const command,
         // skip first line (since it's the echo)
         {
             char c;
-            do { c = m_read_serial(start, timeout_calc); } while (c != '\n' && c != 255);
+            do { c = m_read_serial(start, CellularShield::LTE_SHIELD_ECHO_TIMEOUT); } while (c != '\n' && c != 255);
             // try again!
             if (c == 255) continue;
         }
@@ -281,4 +375,18 @@ CellularShield::Error CellularShield::m_response_to_error(const ResponseType res
         case ResponseType::TIMEOUT: return Error::TIMEOUT;
         default: return Error::UNEXPECTED_DATA;
     }
+}
+
+const char* CellularShield::m_get_pdp_str(const PDPType pdp) {
+    switch(pdp) {
+        case PDPType::IPV4: return "IP";
+        case PDPType::IPV4V6: return "IPV4V6";
+        case PDPType::IPV6: return "IPV6";
+        case PDPType::NONIP: return "NOIP";
+        default: return "IPV4";
+    }
+}
+
+const char* CellularShield::m_get_reg_str(const RegistrationStatus reg) {
+    /** TODO: this */
 }
