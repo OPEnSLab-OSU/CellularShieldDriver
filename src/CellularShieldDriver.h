@@ -31,9 +31,10 @@ public:
     static constexpr auto LTE_SHIELD_COMMAND_MAX_LEN = 10;
     static constexpr auto LTE_SHIELD_POWER_PULSE_PERIOD = 3200;
     static constexpr auto LTE_SHIELD_RESET_PULSE_PERIOD = 10000;
-    static constexpr auto LTE_SHIELD_ECHO_TIMEOUT = 500;
+    static constexpr auto LTE_SHIELD_ECHO_TIMEOUT = 1000;
     static constexpr auto LTE_SHIELD_POWER_TIMEOUT = 12000;
     static constexpr auto LTE_SHIELD_RESET_TIMEOUT = 10000;
+    static constexpr auto LTE_SHIELD_REGISTER_TIMEOUT = 30000;
     static constexpr auto LTE_SHIELD_GREETING = '@';
 
     enum class Protocol {
@@ -59,6 +60,7 @@ public:
         LTE_NOT_FOUND,
         LTE_BAD_CONFIG,
         LTE_AUTO_MNO_FAILED,
+        LTE_REGISTRATION_FAILED
     };
 
     
@@ -108,25 +110,18 @@ public:
     };
 
     struct NetworkConfig {
-        NetworkConfig(const char* apn,
-            const MNOType mno,
-            const PDPType pdp)
-            : apn(apn)
-            , mno(mno)
-            , pdp(pdp) {}
-
-        static constexpr NetworkConfig VERIZON{ "vzwinternet", MNOType::VERIZON, PDPType::IPV4 };
-        static constexpr NetworkConfig HOLOGRAM{ "hologram", MNOType::VERIZON, PDPType::IPV4 };
-        
-        String apn;
-        MNOType mno;
-        PDPType pdp;
+        const char* apn;
+        const MNOType mno;
+        const PDPType pdp;
     };
+
+    static const NetworkConfig CONFIG_VERIZON;
+    static const NetworkConfig CONFIG_HOLOGRAM; 
 
     CellularShield(HardwareSerial & serial,
         const uint8_t powerDetectPin,
         const uint8_t powerPin = LTE_SHIELD_POWER_PIN,
-        const NetworkConfig& netconfig = NetworkConfig::HOLOGRAM,
+        const NetworkConfig& netconfig = CONFIG_HOLOGRAM,
         const unsigned int timeout = 5000,
         const DebugLevel level = DebugLevel::NONE);
 
@@ -146,10 +141,10 @@ public:
 private:
 
     void m_power_toggle() const;
+    CellularShield::Error m_wait_power_on() const;
 
     Error m_configure() const;
     Error m_configure_network() const;
-
     Error m_verify_network() const;
 
     Error m_reset() const;
@@ -159,55 +154,39 @@ private:
         char* response = nullptr, 
         const size_t dest_max = 0,
         const unsigned long timeout = 0,
-        const uint8_t tries = 3) const;
+        const uint8_t tries = 5) const;
 
     ResponseType m_check_response(const unsigned long start, const unsigned long timeout) const;
-
     ResponseType m_check_response(const unsigned long start) const { return m_check_response(start, m_timeout); }
 
     Error m_response_to_error(const ResponseType resp) const;
 
-    char m_read_serial(const unsigned long start, const unsigned long timeout) const {
-        while (!m_serial.available()) {
-            // wait, checking timeout while we're doing so
-            if (millis() - start > timeout) {
-                m_error("Timed out waiting on the LTE serial");
-                return 255;
-            }
-        }
-        // read the first character recieved
-        const char c = m_serial.read();
-        // debug print!
-        if (m_debug == DebugLevel::INFO) Serial.print(c);
-        return c;
-    }
-
+    char m_read_serial(const unsigned long start, const unsigned long timeout) const;
     char m_read_serial(const unsigned long start) const { return m_read_serial(start, m_timeout); }
 
-    /** @brief Prints a debugging prefix to all logs, so we can attatch them to useful information */
-    void m_print_prefix() const { Serial.print("[CellularShield]"); }
+    class SimpleStream {
+    public:
+        SimpleStream(const bool can_print)
+            : m_can_print(can_print) {}
+        template<typename T>
+        SimpleStream& operator<<(const T& arg) { if (m_can_print) Serial.print(arg); return *this; }
+    private:
+        bool m_can_print;
+    };
 
     /** @brief debugging print function, only prints if m_debug is true */
-    template<typename T>
-    void m_print(const T& str, const DebugLevel level) const { 
+    SimpleStream m_print(DebugLevel level) const { 
         // check the current debug level and serial status
-        if (static_cast<uint8_t>(level) > static_cast<uint8_t>(m_debug) || !Serial) return;
-        // print the message
-        m_print_prefix();
-        Serial.println(str);
+        return SimpleStream(static_cast<uint8_t>(level) <= static_cast<uint8_t>(m_debug) 
+            && Serial) << "[CellularShield]";
     }
-
     /** @brief Prints a info message to serial, if info messages are enabled */
-    template<typename T>
-    void m_info(const T& str) const { m_print(str, DebugLevel::INFO); }
-
-    template<typename T>
-    void m_warn(const T& str) const { m_print(str, DebugLevel::WARN); }
-
-    template<typename T>
-    void m_error(const T& str) const { m_print(str, DebugLevel::ERROR); }
+    SimpleStream m_info() const { return m_print(DebugLevel::INFO) << "[INFO]"; }
+    SimpleStream m_warn() const { return m_print(DebugLevel::WARN) << "[WARN]"; }
+    SimpleStream m_error() const { return m_print(DebugLevel::ERROR) << "[ERROR]"; }
 
     static const char* m_get_pdp_str(const PDPType pdp);
+    static const char* m_get_reg_dbg_str(const RegistrationStatus reg);
 
     HardwareSerial& m_serial;
     NetworkConfig m_net_config;
